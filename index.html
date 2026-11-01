@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Бабка 3D — побег</title>
+<style>
+html,body{margin:0;height:100%;background:#000;overflow:hidden;touch-action:none;font-family:Georgia,'Times New Roman',serif;color:#f4eefc;-webkit-user-select:none;user-select:none}
+canvas{position:fixed;inset:0;width:100%;height:100%;image-rendering:pixelated}
+#vig{position:fixed;inset:0;pointer-events:none;background:radial-gradient(ellipse at center,transparent 30%,rgba(0,0,0,.88) 100%)}
+#red{position:fixed;inset:0;pointer-events:none;background:radial-gradient(ellipse at center,transparent 20%,#c00 140%);opacity:0}
+#hud{position:fixed;top:calc(10px + env(safe-area-inset-top,0px));left:14px;right:14px;display:flex;justify-content:space-between;font-size:16px;text-shadow:0 1px 3px #000;pointer-events:none}
+#hud a{pointer-events:auto;color:#ff8fb1}
+button{font:inherit;font-weight:700;background:#ff8fb1;color:#2a0f1b;border:0;border-radius:14px;padding:14px 22px}
+button:focus-visible{outline:2px solid #7ee0c3;outline-offset:2px}
+#hide{position:fixed;right:18px;bottom:calc(28px + env(safe-area-inset-bottom,0px));display:none;padding:20px 22px}
+.ov{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:18px;text-align:center;background:rgba(0,0,0,.85);font-size:28px;padding:24px}
+#flash{position:fixed;top:38%;left:0;right:0;text-align:center;font-size:30px;color:#ff5b5b;text-shadow:0 2px 8px #000;display:none;pointer-events:none}
+#jr{position:fixed;width:100px;height:100px;margin:-50px;border:3px solid rgba(255,255,255,.35);border-radius:50%;display:none;pointer-events:none}
+#jk{position:fixed;width:36px;height:36px;margin:-18px;background:rgba(255,255,255,.4);border-radius:50%;display:none;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas><div id="vig"></div><div id="red"></div>
+<div id="hud"><span id="info"></span><a href="index.html">← В сайт</a></div>
+<div id="flash"></div><div id="jr"></div><div id="jk"></div>
+<button id="hide">Спрятаться</button>
+<div class="ov" id="msg"><div id="mt"></div></div>
+<div class="ov" id="start" style="display:flex;background:#000"><div>👵 Бабка 3D</div><div style="font-size:16px;color:#a79bc4;max-width:340px">Найди 3 ключа 🗝 и открой дверь. У вас 5 дней: каждая поимка — новый день. Левая половина экрана — идти, правая — смотреть. Лучше в наушниках.</div><button id="go">Начать</button></div>
+
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {getDatabase,ref,get,set,update,onValue,onDisconnect,runTransaction} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+const db = getDatabase(initializeApp({databaseURL:"https://shsj-66355-default-rtdb.firebaseio.com",projectId:"shsj-66355"}));
+const MAP = [
+"#####################",
+"#P.....#.....#.....K#",
+"#..H...#..H..#...H..#",
+"#......#.....#......#",
+"###.#####.#####.#####",
+"#...................#",
+"#.#####.#####.#####.#",
+"#.#K..#.#...#.#..H#.#",
+"#.#...#.#.H.#.#...#.#",
+"#.#...#.#...#.#..K#.#",
+"#.##.##.##.##.##.##.#",
+"#...................E",
+"#####################"];
+const W=21,H=13,NEED=3,DAYS=5,START=[1.5,1.5],GS=[10.5,5.5];
+const KEYS=[[19,1],[3,7],[17,9]];
+const HS=[]; MAP.forEach((r,y)=>[...r].forEach((c,x)=>{if(c==="H")HS.push([x+.5,y+.5])}));
+const $=s=>document.querySelector(s);
+
+let me=localStorage.getItem("me")||"g"+Math.random().toString(36).slice(2,7), name="Игрок";
+get(ref(db,"users/"+me+"/name")).then(s=>{if(s.exists())name=s.val()}).catch(()=>{});
+let off=0; onValue(ref(db,".info/serverTimeOffset"),s=>off=s.val()||0);
+const now=()=>Date.now()+off;
+let G={players:{},keys:{},granny:null,won:null,stun:0,day:1}, wasWon=false, lastDay=1, lastC=0;
+const p={x:START[0],y:START[1],a:.5,h:false}, gr={x:GS[0],y:GS[1]};
+const fresh=()=>Object.entries(G.players).filter(([i,v])=>now()-v.t<4000);
+const keysN=()=>Object.keys(G.keys).length;
+const isHost=()=>[...fresh().map(e=>e[0]).filter(i=>i!==me),me].sort()[0]===me;
+const reset=()=>update(ref(db,"game3"),{keys:null,won:null,stun:null,day:1});
+const say=(t,ms)=>{const f=$("#flash");f.textContent=t;f.style.display="block";setTimeout(()=>f.style.display="none",ms||1800)};
+
+onValue(ref(db,"game3"),s=>{
+  const v=s.val()||{}, pc=G.granny&&G.granny.c;
+  G={players:v.players||{},keys:v.keys||{},granny:v.granny||null,won:v.won||null,stun:v.stun||0,day:v.day||1};
+  if(G.granny&&G.granny.c&&!pc&&Math.hypot(G.granny.x-p.x,G.granny.y-p.y)<12){tone(100,1.2,"sawtooth",.25,45);noise(.6,.2,500)}
+  if(G.day>DAYS&&isHost()){reset()}
+  if(G.day<lastDay&&!G.won){p.x=START[0];p.y=START[1];p.h=false;say("Дни кончились. Всё заново…",3000)}
+  lastDay=G.day;
+  if(G.won&&!wasWon){
+    wasWon=true;$("#mt").textContent="🎉 Вы сбежали! +50 🪙";$("#msg").style.display="flex";
+    tone(523,.4,"triangle",.3);setTimeout(()=>tone(784,.6,"triangle",.3),250);
+    if(localStorage.getItem("win")!==String(G.won.t)){
+      localStorage.setItem("win",String(G.won.t));
+      if(localStorage.getItem("me"))runTransaction(ref(db,"users/"+me+"/coins"),c=>(c||0)+50);
+    }
+    setTimeout(()=>{if(G.won)reset()},7000+Math.random()*1000);
+  }
+  if(!G.won&&wasWon){wasWon=false;$("#msg").style.display="none";p.x=START[0];p.y=START[1];p.h=false;gr.x=GS[0];gr.y=GS[1]}
+  $("#info").textContent="День "+Math.min(G.day,DAYS)+"/"+DAYS+" · 🗝 "+keysN()+"/"+NEED+" · 👥 "+fresh().length;
+});
+onDisconnect(ref(db,"game3/players/"+me)).remove();
+
+/* ---------- звук (всё синтезируется, файлов нет) ---------- */
+let ac,mg;
+function startAudio(){
+  if(ac)return; ac=new (window.AudioContext||window.webkitAudioContext)(); mg=ac.createGain(); mg.gain.value=.8; mg.connect(ac.destination);
+  const lp=ac.createBiquadFilter(); lp.type="lowpass"; lp.frequency.value=140;
+  const dg=ac.createGain(); dg.gain.value=.07; lp.connect(dg); dg.connect(mg);
+  [55,58.3].forEach(f=>{const o=ac.createOscillator();o.type="sawtooth";o.frequency.value=f;o.connect(lp);o.start()});
+}
+function tone(f,d,type,v,to){
+  if(!ac)return; const t=ac.currentTime,o=ac.createOscillator(),g=ac.createGain();
+  o.type=type||"sine"; o.frequency.setValueAtTime(f,t); if(to)o.frequency.exponentialRampToValueAtTime(to,t+d);
+  g.gain.setValueAtTime(Math.max(.002,v),t); g.gain.exponentialRampToValueAtTime(.001,t+d);
+  o.connect(g); g.connect(mg); o.start(t); o.stop(t+d);
+}
+function noise(d,v,fq,pan){
+  if(!ac)return; const n=ac.sampleRate*d|0,b=ac.createBuffer(1,n,ac.sampleRate),a=b.getChannelData(0);
+  for(let i=0;i<n;i++)a[i]=Math.random()*2-1;
+  const s=ac.createBufferSource(),f=ac.createBiquadFilter(),g=ac.createGain(),pn=ac.createStereoPanner?ac.createStereoPanner():null;
+  s.buffer=b; f.type="lowpass"; f.frequency.value=fq; g.gain.setValueAtTime(Math.max(.002,v),ac.currentTime); g.gain.exponentialRampToValueAtTime(.001,ac.currentTime+d);
+  s.connect(f); f.connect(g); if(pn){pn.pan.value=pan||0;g.connect(pn);pn.connect(mg)}else g.connect(mg); s.start();
+}
+$("#go").onclick=()=>{startAudio();$("#start").style.display="none"};
+
+/* ---------- карта, движение, бабка ---------- */
+const tile=(x,y)=>(MAP[y]||"")[x]??"#";
+const solid=(x,y)=>{const c=tile(Math.floor(x),Math.floor(y));return c==="#"||(c==="E"&&keysN()<NEED)};
+function move(dx,dy){
+  const r=.25;
+  for(const [ax,ay] of [[dx,0],[0,dy]]){
+    const nx=p.x+ax,ny=p.y+ay;
+    if(![[-r,-r],[r,-r],[-r,r],[r,r]].some(([a,b])=>solid(nx+a,ny+b))){p.x=nx;p.y=ny}
+  }
+}
+function path(sx,sy,tx,ty){
+  const k=(x,y)=>y*W+x,prev=new Map([[k(sx,sy),-1]]),q=[[sx,sy]];
+  while(q.length){
+    const [x,y]=q.shift(); if(x===tx&&y===ty)break;
+    for(const [a,b] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx=x+a,ny=y+b,t=tile(nx,ny);
+      if(t==="#"||t==="E"||prev.has(k(nx,ny)))continue;
+      prev.set(k(nx,ny),k(x,y)); q.push([nx,ny]);
+    }
+  }
+  if(!prev.has(k(tx,ty)))return null;
+  let c=k(tx,ty); const r=[]; while(c!==-1){r.push([c%W,(c/W)|0]);c=prev.get(c)} return r.reverse();
+}
+let route=null,chase=0,acc=0;
+function randomRoute(){
+  for(let i=0;i<30;i++){
+    const x=1+(Math.random()*(W-2)|0),y=1+(Math.random()*(H-2)|0);
+    if(tile(x,y)==="."){const r=path(gr.x|0,gr.y|0,x,y);if(r&&r.length>1)return r}
+  }
+  return null;
+}
+function grannyStep(dt){
+  if(now()<G.stun)return;
+  acc-=dt;
+  if(acc<=0){
+    acc=.3; let best=null,bl=99;
+    for(const [i,v] of fresh()){
+      if(v.h)continue;
+      const r=path(gr.x|0,gr.y|0,v.x|0,v.y|0);
+      if(r&&r.length<bl){bl=r.length;best=r}
+    }
+    if(best&&bl<=10){route=best;chase=1}
+    else if(chase||!route||route.length<2){chase=0;route=randomRoute()}
+  }
+  if(route&&route.length>1){
+    const [tx,ty]=route[1],dx=tx+.5-gr.x,dy=ty+.5-gr.y,d=Math.hypot(dx,dy),sp=(chase?1.9+.25*G.day:1.2)*dt;
+    if(d<=sp){gr.x=tx+.5;gr.y=ty+.5;route.shift()}else{gr.x+=dx/d*sp;gr.y+=dy/d*sp}
+  }
+}
+
+/* ---------- управление ---------- */
+const kd={}; let mv=null,lk=null,near=null;
+addEventListener("keydown",e=>{kd[e.key.toLowerCase()]=1;if(e.key==="e")toggleHide()});
+addEventListener("keyup",e=>delete kd[e.key.toLowerCase()]);
+const cv=$("#cv"),ctx=cv.getContext("2d");
+cv.addEventListener("click",()=>{if(cv.requestPointerLock&&!("ontouchstart" in window))cv.requestPointerLock()});
+addEventListener("mousemove",e=>{if(document.pointerLockElement)p.a+=e.movementX*.003});
+cv.addEventListener("touchstart",e=>{
+  for(const t of e.changedTouches){
+    if(t.clientX<innerWidth/2&&!mv){mv={id:t.identifier,ox:t.clientX,oy:t.clientY,dx:0,dy:0};
+      for(const id of ["jr","jk"]){const el=$("#"+id);el.style.display="block";el.style.left=t.clientX+"px";el.style.top=t.clientY+"px"}}
+    else if(!lk)lk={id:t.identifier,x:t.clientX};
+  }
+  e.preventDefault();
+},{passive:false});
+cv.addEventListener("touchmove",e=>{
+  for(const t of e.changedTouches){
+    if(mv&&t.identifier===mv.id){let dx=(t.clientX-mv.ox)/50,dy=(t.clientY-mv.oy)/50,l=Math.hypot(dx,dy);if(l>1){dx/=l;dy/=l}mv.dx=dx;mv.dy=dy;
+      $("#jk").style.left=mv.ox+dx*50+"px";$("#jk").style.top=mv.oy+dy*50+"px"}
+    if(lk&&t.identifier===lk.id){p.a+=(t.clientX-lk.x)*.007;lk.x=t.clientX}
+  }
+  e.preventDefault();
+},{passive:false});
+const tend=e=>{for(const t of e.changedTouches){
+  if(mv&&t.identifier===mv.id){mv=null;$("#jr").style.display=$("#jk").style.display="none"}
+  if(lk&&t.identifier===lk.id)lk=null}};
+cv.addEventListener("touchend",tend); cv.addEventListener("touchcancel",tend);
+function toggleHide(){if(p.h){p.h=false;noise(.2,.2,600)}else if(near){p.h=true;p.x=near[0];p.y=near[1];noise(.2,.2,600)}}
+$("#hide").onclick=toggleHide;
+
+/* ---------- 3D (рейкастинг) ---------- */
+const mk=e=>{const c=document.createElement("canvas");c.width=c.height=96;const x=c.getContext("2d");x.font="80px serif";x.textAlign="center";x.textBaseline="middle";x.fillText(e,48,52);return c};
+const IMG={k:mk("🗝"),g:mk("👧"),b:mk("👵"),h:mk("🚪")};
+let Wd=280,Ht=500,zb,sky,flr;
+function resize(){
+  Wd=innerWidth>innerHeight?420:280; Ht=Math.max(120,Math.min(560,Math.round(Wd*innerHeight/innerWidth)));
+  cv.width=Wd;cv.height=Ht;zb=new Float32Array(Wd);
+  flr=ctx.createLinearGradient(0,Ht/2,0,Ht);flr.addColorStop(0,"#030202");flr.addColorStop(1,"#1d1511");
+  sky=ctx.createLinearGradient(0,0,0,Ht/2);sky.addColorStop(0,"#161111");sky.addColorStop(1,"#030202");
+}
+addEventListener("resize",resize); resize();
+
+function render(){
+  const hh=Ht/2,dx0=Math.cos(p.a),dy0=Math.sin(p.a),plx=-dy0*.66,ply=dx0*.66;
+  ctx.fillStyle=sky;ctx.fillRect(0,0,Wd,hh);ctx.fillStyle=flr;ctx.fillRect(0,hh,Wd,hh);
+  for(let x=0;x<Wd;x++){
+    const cx=2*x/Wd-1,rx=dx0+plx*cx,ry=dy0+ply*cx;
+    let mx=p.x|0,my=p.y|0;const ddx=Math.abs(1/rx),ddy=Math.abs(1/ry);
+    let sx,sy,sdx,sdy;
+    if(rx<0){sx=-1;sdx=(p.x-mx)*ddx}else{sx=1;sdx=(mx+1-p.x)*ddx}
+    if(ry<0){sy=-1;sdy=(p.y-my)*ddy}else{sy=1;sdy=(my+1-p.y)*ddy}
+    let side=0,hit="",n=0;
+    while(!hit&&n++<40){
+      if(sdx<sdy){sdx+=ddx;mx+=sx;side=0}else{sdy+=ddy;my+=sy;side=1}
+      const c=tile(mx,my); if(c==="#"||(c==="E"&&keysN()<NEED))hit=c;
+    }
+    const dist=Math.max(.05,side?sdy-ddy:sdx-ddx); zb[x]=dist;
+    const lh=Ht/dist; let wx=side?p.x+dist*rx:p.y+dist*ry; wx-=Math.floor(wx);
+    let b=Math.max(.03,1-dist/5.5)*(side?.7:1); if(wx%.25<.025)b*=.6;
+    const c=hit==="E"?[170,120,50]:[120,86,74];
+    ctx.fillStyle=`rgb(${c[0]*b|0},${c[1]*b|0},${c[2]*b|0})`;
+    ctx.fillRect(x,hh-lh/2,1,lh);
+  }
+  /* спрайты */
+  const L=[];
+  KEYS.forEach(([x,y],i)=>{if(!G.keys[i])L.push([IMG.k,x+.5,y+.5,.35])});
+  HS.forEach(([x,y])=>L.push([IMG.h,x,y,.9]));
+  for(const [i,v] of fresh())if(i!==me&&!v.h)L.push([IMG.g,v.x,v.y,.8]);
+  L.push([IMG.b,gr.x,gr.y,1]);
+  L.sort((a,b)=>Math.hypot(b[1]-p.x,b[2]-p.y)-Math.hypot(a[1]-p.x,a[2]-p.y));
+  const inv=1/(plx*dy0-dx0*ply);
+  for(const [img,wx,wy,sz] of L){
+    const dx=wx-p.x,dy=wy-p.y,tx=inv*(dy0*dx-dx0*dy),ty=inv*(-ply*dx+plx*dy);
+    if(ty<=.15)continue;
+    const sxc=Wd/2*(1+tx/ty),sh=Ht/ty*sz,top=hh+Ht/ty*(.5-sz/2)-sh/2;
+    ctx.globalAlpha=Math.max(.2,Math.min(1,1.15-ty/6));
+    for(let cx=Math.max(0,(sxc-sh/2)|0);cx<Math.min(Wd,sxc+sh/2);cx++){
+      if(ty<zb[cx])ctx.drawImage(img,((cx-(sxc-sh/2))/sh*96)|0,0,1,96,cx,top,1,sh);
+    }
+  }
+  ctx.globalAlpha=1;
+  if(p.h){ctx.fillStyle="#050302";ctx.fillRect(0,0,Wd,hh-7);ctx.fillRect(0,hh+7,Wd,hh)}
+}
+
+/* ---------- цикл ---------- */
+let last=performance.now(),sendT=0,stepT=0,gStepT=0,beatT=0;
+function caught(){
+  lastC=now(); p.x=START[0];p.y=START[1];p.h=false;
+  set(ref(db,"game3/stun"),now()+3000);
+  runTransaction(ref(db,"game3/day"),d=>(d||1)+1);
+  noise(.8,.7,2500);tone(900,.7,"sawtooth",.3,90);navigator.vibrate&&navigator.vibrate(300);
+  say("👵 Бабка поймала! Новый день…",2200);
+}
+function loop(t){
+  const dt=Math.min(.05,(t-last)/1000);last=t;
+  if(!G.won){
+    let moving=false;
+    if(!p.h){
+      let dx=(kd.d||kd.arrowright?1:0)-(kd.a||kd.arrowleft?1:0),dy=(kd.s||kd.arrowdown?1:0)-(kd.w||kd.arrowup?1:0);
+      if(kd.q)p.a-=2*dt; if(kd.e&&0)p.a+=2*dt;
+      if(mv){dx=mv.dx;dy=mv.dy}
+      const l=Math.hypot(dx,dy);if(l>1){dx/=l;dy/=l}
+      if(l>.15){
+        moving=true;
+        const c=Math.cos(p.a),s=Math.sin(p.a),f=-dy*2.6*dt,sd=dx*2.6*dt;
+        move(c*f-s*sd,s*f+c*sd);
+      }
+    }
+    near=HS.find(([x,y])=>Math.hypot(x-p.x,y-p.y)<.9)||null;
+    $("#hide").style.display=(near||p.h)?"block":"none"; $("#hide").textContent=p.h?"Выйти":"Спрятаться";
+    if(isHost())grannyStep(dt);
+    else if(G.granny){const k=Math.min(1,dt*10);gr.x+=(G.granny.x-gr.x)*k;gr.y+=(G.granny.y-gr.y)*k}
+    KEYS.forEach(([x,y],i)=>{if(!G.keys[i]&&Math.hypot(x+.5-p.x,y+.5-p.y)<.6){G.keys[i]=true;set(ref(db,"game3/keys/"+i),true);tone(1200,.3,"triangle",.3);setTimeout(()=>tone(1600,.4,"triangle",.3),120)}});
+    const d=Math.hypot(gr.x-p.x,gr.y-p.y);
+    if(!p.h&&d<.7&&now()-lastC>3000)caught();
+    if(tile(p.x|0,p.y|0)==="E"&&keysN()>=NEED)set(ref(db,"game3/won"),{by:name,t:now()});
+    /* звуки */
+    stepT-=dt; if(moving&&stepT<=0){stepT=.45;noise(.08,.18,420)}
+    gStepT-=dt; if(d<9&&gStepT<=0){gStepT=chase||(G.granny&&G.granny.c)?.4:.7;noise(.12,Math.max(.01,(1-d/9)*.7),260,Math.sin(Math.atan2(gr.y-p.y,gr.x-p.x)-p.a))}
+    beatT-=dt; if(d<7&&beatT<=0){beatT=.35+d*.12;tone(65,.18,"sine",.9-d/9,38);setTimeout(()=>tone(60,.15,"sine",.5-d/16,35),170)}
+    $("#red").style.opacity=d<5?(1-d/5)*.8:0;
+  }
+  sendT-=dt;
+  if(sendT<=0){
+    sendT=.1;
+    set(ref(db,"game3/players/"+me),{x:+p.x.toFixed(2),y:+p.y.toFixed(2),h:p.h?1:0,n:name,t:now()});
+    if(isHost())set(ref(db,"game3/granny"),{x:+gr.x.toFixed(2),y:+gr.y.toFixed(2),c:chase});
+  }
+  render(); requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
